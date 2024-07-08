@@ -1764,6 +1764,43 @@ static struct spec_list *extra_specs = (struct spec_list *) 0;
 
 static struct spec_list *specs = (struct spec_list *) 0;
 
+
+
+
+/* A spec function that returns the directory name of a given path.  */
+static const char *
+dirname_spec_function (int argc, const char **argv)
+{
+  if (argc != 1)
+    fatal ("dirname spec function takes exactly one argument");
+
+  return xstrdup( dirname (xstrdup (argv[0])));;
+}
+
+/* A spec function that returns the GCC version.  */
+static const char *
+gccversion_spec_function (int argc, const char **argv)
+{
+  if (argc != 0)
+    fatal ("gccversion spec function takes no arguments");
+
+  return version_string;
+}
+
+#ifdef EXTRA_SPEC_FUNCTIONS
+#define EXTRA_SPEC_FUNCTIONS_ORIG EXTRA_SPEC_FUNCTIONS,
+#undef EXTRA_SPEC_FUNCTIONS
+#else
+#define EXTRA_SPEC_FUNCTIONS_ORIG
+#endif
+
+#define EXTRA_SPEC_FUNCTIONS \
+  EXTRA_SPEC_FUNCTIONS_ORIG \
+  { "dirname", dirname_spec_function }, \
+  { "gccversion", gccversion_spec_function }
+
+
+
 /* List of static spec functions.  */
 
 static const struct spec_function static_spec_functions[] =
