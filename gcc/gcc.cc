@@ -54,6 +54,8 @@ compilation is specified by a string called a "spec".  */
 #endif
 
 
+#define DEBUG_SPECS 1
+
 /* Manage the manipulation of env vars.
 
    We poison "getenv" and "putenv", so that all enviroment-handling is
@@ -168,6 +170,13 @@ env_manager::restore ()
     }
 
   m_keys.truncate (0);
+}
+
+static void dump_args(const char *prefix, int argc, const char **argv) {
+  fprintf(stderr, "dump_args for %s argc: %d\n", prefix, argc);
+  for (int i = 0; i < argc; ++i) {
+    fprintf(stderr, "%s argv[%d] = %s\n", prefix, i, argv[i]);
+  } 
 }
 
 /* Forbid other uses of getenv and putenv.  */
@@ -1767,37 +1776,304 @@ static struct spec_list *specs = (struct spec_list *) 0;
 
 
 
+/* Append `part` of length `len` to the dynamically allocated buffer `buffer`.
+   Resizes the buffer if necessary to accommodate the new part.
+   Updates the used size of the buffer.
+   PARAMETERS:
+   - buffer: A pointer to the dynamically allocated buffer.
+   - size: A pointer to the total size of the buffer.
+   - used: A pointer to the used size of the buffer.
+   - part: The part to append to the buffer.
+   - len: The length of the part to append. */
+static void
+append_part (char **buffer, size_t *size, size_t *used, const char *part, size_t len)
+{
+  while (*used + len + 1 >= *size)
+    {
+      *size *= 2;
+      *buffer = XRESIZEVEC (char, *buffer, *size);
+    }
+  strncat (*buffer + *used, part, len);
+  *used += len;
+  (*buffer)[*used] = '\0';
+}
+
+#define CANONICAL_PATH_NO_SYMLINKS_INIT_BUF_SZ 1024
+#define CANONICAL_PATH_XSTR(token) CANONICAL_PATH_STR(token)
+#define CANONICAL_PATH_STR(token) #token
+
+/* This function returns the canonicalized absolute path of `path` without
+   resolving any symbolic links. It dynamically allocates memory for the
+   resulting path and ensures portability across different platforms by
+   using IS_DIR_SEPARATOR and DIR_SEPARATOR.
+   PARAMETERS:
+   - path: The input path to canonicalize.
+   RETURNS:
+   - A dynamically allocated string containing the canonicalized path,
+     or NULL if an error occurred. */
+static char *
+canonical_path_no_resolve_symlinks (const char *path)
+{
+  if (!path)
+    return NULL;
+
+  char *cwd = getcwd (NULL, 0);
+  if (!cwd)
+    {
+      fatal_error (input_location, "getcwd failed in canonical_path_no_resolve_symlinks");
+      return NULL;
+    }
+
+  size_t canonical_size = CANONICAL_PATH_NO_SYMLINKS_INIT_BUF_SZ;
+  char *canonical_path = XNEWVEC (char, canonical_size);
+  if (!canonical_path)
+    {
+      free (cwd);
+      fatal_error (input_location, "XNEWVEC of canonical_size failed in canonical_path_no_resolve_symlinks");
+      return NULL;
+    }
+
+  if (IS_DIR_SEPARATOR (path[0]))
+    {
+      // Absolute path
+      strncpy (canonical_path, path, canonical_size);
+      fprintf(stderr, "canon_spec: abs path canonical_path: \"%s\" path: \"%s\" canonical_size: %zu\n", canonical_path, path, canonical_size);
+    }
+  else
+    {
+      // Relative path
+      snprintf (canonical_path, canonical_size, "%s%c%s", cwd, DIR_SEPARATOR, path);
+      fprintf(stderr, "canon_spec: rel path canonical_path: \"%s\" cwd: \"%s\" dir_sep: '%c' path: \"%s\" canonical_size: %zu\n", canonical_path, cwd, DIR_SEPARATOR, path, canonical_size);
+    }
+
+  size_t result_size = CANONICAL_PATH_NO_SYMLINKS_INIT_BUF_SZ;
+  size_t result_used = 0;
+  char *result_path = XNEWVEC (char, result_size);
+  if (!result_path)
+    {
+      free (cwd);
+      free (canonical_path);
+      fatal_error (input_location, "XNEWVEC of result_size failed in canonical_path_no_resolve_symlinks");
+      return NULL;
+    }
+
+  result_path[0] = '\0';
+  result_used = 0;
+
+  const char dir_sep_str[3] = { DIR_SEPARATOR };
+
+  // Tokenize and canonicalize the path
+  const char *remaining_path = canonical_path;
+  int i = 0;
+  bool is_abs = false;
+  while (*remaining_path != '\0')
+    {
+      // Skip any leading directory separators
+      while (IS_DIR_SEPARATOR (*remaining_path))
+        {
+          if (i == 0)
+            {
+              is_abs = true;
+            }
+          remaining_path++;
+        }
+
+      // Find the next directory separator
+      const char *next_sep = remaining_path;
+      while (*next_sep != '\0' && !IS_DIR_SEPARATOR (*next_sep))
+        next_sep++;
+
+      // Get the length of this part
+      size_t len = next_sep - remaining_path;
+
+      if (len == 0)
+        {
+          // If the part is empty, we've reached the end
+          fprintf(stderr, "canon_spec: remaining_path len == 0\n");
+          break;
+        }
+
+      char *part = XNEWVEC (char, len + 1);
+      if (!part)
+        {
+          free (cwd);
+          free (canonical_path);
+          free (result_path);
+          fatal_error (input_location, "XNEWVEC of part failed in canonical_path_no_resolve_symlinks");
+          return NULL;
+        }
+      strncpy(part, remaining_path, len);
+      part[len] = '\0';
+
+      fprintf(stderr, "canon_spec remaining_path[%d]: \"%s\" part[%d]: \"%s\" len: %zu\n", i, remaining_path, i, part, len);
+      // Process the part
+      if (filename_cmp (part, ".") == 0 && len == 1)
+        {
+          // Skip current directory parts
+        }
+      else if (filename_cmp (part, "..") == 0 && len == 2)
+        {
+          // Go up one level in the path
+          if (result_used != 0)
+            {
+              // Find the last directory separator in result_path
+              char *last_sep = result_path + result_used - 1;
+              while (last_sep != result_path && !IS_DIR_SEPARATOR (*last_sep))
+                last_sep--;
+              if (IS_DIR_SEPARATOR (*last_sep))
+                {
+                  *last_sep = '\0';
+                  result_used = last_sep - result_path;
+                }
+            }
+        }
+      else
+        {
+          // Append the root directory seperator part to the canonical path
+          if (i == 0 && is_abs)
+            {
+              append_part (&result_path, &result_size, &result_used, dir_sep_str, strlen (dir_sep_str));
+            }
+          // Append the part to the canonical path
+          if (result_used != 0 && !IS_DIR_SEPARATOR (result_path[result_used - 1]))
+            {
+              append_part (&result_path, &result_size, &result_used, dir_sep_str, strlen (dir_sep_str));
+            }
+          append_part (&result_path, &result_size, &result_used, part, len);
+        }
+
+      // Move to the next part
+      free (part);
+      remaining_path = next_sep;
+      ++i;
+    }
+
+  free (canonical_path);
+  free (cwd);
+  return result_path;
+}
+
+/* A spec function that returns the canonical path a given path
+   without resolving symlinks.  */
+static const char *
+canonical_path_no_resolve_symlinks_spec_function (int argc, const char **argv)
+{
+  dump_args("canonical_path_no_resolve_symlinks_spec", argc, argv);
+  if (argc != 1)
+    fatal_error (input_location, "canonical_path_no_resolve_symlinks spec function takes exactly one argument");
+
+  const char *canonical_path = canonical_path_no_resolve_symlinks (argv[0]);
+  if (canonical_path == NULL)
+      fatal_error (input_location, "canonical_path_no_resolve_symlinks spec function would return NULL");
+
+  fprintf(stderr, "canonical_path_no_resolve_symlinks(\"%s\") = \"%s\"\n", argv[0], canonical_path);
+
+  return canonical_path;
+}
+
+/* This function returns the enclosing directory of `path`.
+   It is inconsequential whether `path` ends in a dirsep or not.
+   It allocates a new string and does not modify the string
+   pointed to by `path.  */
+static char *
+spec_dirname (const char *path)
+{
+  if (!path || !*path)
+    return xstrdup (".");
+  char *dpath = xstrdup (path);
+  size_t dir_len = strlen (dpath) - 1;
+  for (; IS_DIR_SEPARATOR (dpath[dir_len]); dir_len--)
+    {
+      if (!dir_len)
+        {
+          free(dpath);
+          return xstrdup ("/");
+        }
+    }
+  for (; !IS_DIR_SEPARATOR (dpath[dir_len]); dir_len--)
+    {
+      if (!dir_len)
+        {
+          free(dpath);
+          return xstrdup (".");
+        }
+    }
+  for (; IS_DIR_SEPARATOR (dpath[dir_len]); dir_len--)
+    {
+      if (!dir_len)
+        {
+          free(dpath);
+          return xstrdup ("/");
+        }
+    }
+  dpath[dir_len + 1] = '\0';
+  return dpath;
+}
+
 /* A spec function that returns the directory name of a given path.  */
 static const char *
 dirname_spec_function (int argc, const char **argv)
 {
+  dump_args("dirname_spec", argc, argv);
   if (argc != 1)
-    fatal ("dirname spec function takes exactly one argument");
+    fatal_error (input_location, "dirname spec function takes exactly one argument");
 
-  return xstrdup( dirname (xstrdup (argv[0])));;
+  const char *dirname = spec_dirname (argv[0]);
+  fprintf (stderr, "dirname_spec(\"%s\") = \"%s\"\n", argv[0], dirname);
+  return dirname;
 }
 
 /* A spec function that returns the GCC version.  */
 static const char *
-gccversion_spec_function (int argc, const char **argv)
+gccversion_spec_function (int argc, const char **argv ATTRIBUTE_UNUSED)
 {
+  dump_args("gccversion_spec", argc, argv);
   if (argc != 0)
-    fatal ("gccversion spec function takes no arguments");
+    fatal_error (input_location, "gccversion spec function takes no arguments");
 
-  return version_string;
+  char *version = xstrdup (version_string);
+  if (char *space = strchr(version, ' '))
+    {
+      *space = '\0';
+    }
+
+  return version;
+}
+
+/* A spec function that concatenates its arugment strings.  */
+static const char *
+concat_spec_function (int argc, const char **argv)
+{
+  dump_args("concat_spec", argc, argv);
+  size_t total_len = 1;
+  for (int i = 0; i < argc; ++i)
+    {
+      total_len += strlen (argv[i]);
+    }
+  fprintf(stderr, "concat_spec total_len: %zu\n", total_len);
+  char *concat = XNEWVEC (char, total_len);
+  char *p = concat;
+  for (int i = 0; i < argc; ++i)
+    {
+      size_t slen = strlen (argv[i]);
+      strncpy (p, argv[i], slen);
+      p += slen;
+    }
+  concat[total_len - 1] = '\0';
+  fprintf(stderr, "concat_spec = \"%s\"\n", concat);
+  return concat;
 }
 
 #ifdef EXTRA_SPEC_FUNCTIONS
-#define EXTRA_SPEC_FUNCTIONS_ORIG EXTRA_SPEC_FUNCTIONS,
-#undef EXTRA_SPEC_FUNCTIONS
+#define EXTRA_EXTRA_SPEC_FUNCTIONS \
+  EXTRA_SPEC_FUNCTIONS \
+  { "canonical_path_no_resolve_symlinks", canonical_path_no_resolve_symlinks_spec_function }, \
+  { "concat", concat_spec_function }, \
+  { "dirname", dirname_spec_function}, \
+  { "gccversion", gccversion_spec_function },
 #else
-#define EXTRA_SPEC_FUNCTIONS_ORIG
+#define EXTRA_EXTRA_SPEC_FUNCTIONS
 #endif
-
-#define EXTRA_SPEC_FUNCTIONS \
-  EXTRA_SPEC_FUNCTIONS_ORIG \
-  { "dirname", dirname_spec_function }, \
-  { "gccversion", gccversion_spec_function }
 
 
 
@@ -1826,8 +2102,8 @@ static const struct spec_function static_spec_functions[] =
   { "dwarf-version-gt",		dwarf_version_greater_than_spec_func },
   { "fortran-preinclude-file",	find_fortran_preinclude_file},
   { "join",			join_spec_func},
-#ifdef EXTRA_SPEC_FUNCTIONS
-  EXTRA_SPEC_FUNCTIONS
+#ifdef EXTRA_EXTRA_SPEC_FUNCTIONS
+  EXTRA_EXTRA_SPEC_FUNCTIONS
 #endif
   { 0, 0 }
 };
@@ -1887,6 +2163,7 @@ init_gcc_specs (struct obstack *obstack, const char *shared_name,
 static void
 init_spec (void)
 {
+  fprintf(stderr, "init_spec: specs: %p\n", (void*)specs);
   struct spec_list *next = (struct spec_list *) 0;
   struct spec_list *sl   = (struct spec_list *) 0;
   int i;
@@ -1896,6 +2173,13 @@ init_spec (void)
 
   if (verbose_flag)
     fnotice (stderr, "Using built-in specs.\n");
+
+  i = 0;
+  for (sl = specs; sl; sl = sl->next, i++) {
+      fprintf(stderr, "init_specs: specs[%d]: name: %s user_p: %s alloc_p %s spec:\n%s\nEND_EXTRA_SPECS1\n", i, sl->name, sl->user_p ? "YES" : "NO", sl->alloc_p ? "YES" : "NO", sl->ptr);
+  }
+  i = 0;
+  sl = (struct spec_list *) 0;
 
 #ifdef EXTRA_SPECS
   extra_specs = XCNEWVEC (struct spec_list, ARRAY_SIZE (extra_specs_1));
@@ -1909,6 +2193,7 @@ init_spec (void)
       sl->name_len = strlen (sl->name);
       sl->ptr_spec = &sl->ptr;
       gcc_assert (sl->ptr_spec != NULL);
+      fprintf(stderr, "init_specs: extra_specs1[%d]: name: %s user_p: %s alloc_p %s spec:\n%s\nEND_EXTRA_SPECS1\n", i, sl->name, sl->user_p ? "YES" : "NO", sl->alloc_p ? "YES" : "NO", sl->ptr);
       sl->default_ptr = sl->ptr;
       next = sl;
     }
@@ -1917,6 +2202,7 @@ init_spec (void)
   for (i = ARRAY_SIZE (static_specs) - 1; i >= 0; i--)
     {
       sl = &static_specs[i];
+      fprintf(stderr, "init_specs: static_specs[%d]: name: %s user_p: %s alloc_p: %s spec:\n%s\nEND_EXTRA_SPECS1\n", i, sl->name, sl->user_p ? "YES" : "NO", sl->alloc_p ? "YES" : "NO", sl->ptr);
       sl->next = next;
       next = sl;
     }
@@ -2042,6 +2328,13 @@ init_spec (void)
 #endif
 
   specs = sl;
+
+  i = 0;
+  for (sl = specs; sl; sl = sl->next, i++) {
+      fprintf(stderr, "init_specs: final specs[%d]: name: %s user_p: %s alloc_p %s spec:\n%s\nEND_EXTRA_SPECS1\n", i, sl->name, sl->user_p ? "YES" : "NO", sl->alloc_p ? "YES" : "NO", sl->ptr);
+  }
+  i = 0;
+  sl = (struct spec_list *) 0;
 }
 
 /* Update the entry for SPEC in the static_specs table to point to VALUE,
@@ -2409,6 +2702,7 @@ load_specs (const char *filename)
 static void
 read_specs (const char *filename, bool main_p, bool user_p)
 {
+  fprintf(stderr, "read_specs: filename: %s main_p: %s user_p: %s\n", filename, main_p ? "YES" : "NO", user_p ? "YES" : "NO");
   char *buffer;
   char *p;
 
@@ -8502,6 +8796,7 @@ driver::set_up_specs () const
   just_machine_suffix = concat (spec_machine, dir_separator_str, NULL);
 
   specs_file = find_a_file (&startfile_prefixes, "specs", R_OK, true);
+  fprintf(stderr, "set_up_specs: specs_file: %s\n", specs_file);
   /* Read the specs file unless it is a default one.  */
   if (specs_file != 0 && strcmp (specs_file, "specs"))
     read_specs (specs_file, true, false);
@@ -10339,6 +10634,7 @@ print_multilib_info (void)
 static const char *
 getenv_spec_function (int argc, const char **argv)
 {
+  dump_args("getenv_spec", argc, argv);
   const char *value;
   const char *varname;
 
@@ -10346,8 +10642,10 @@ getenv_spec_function (int argc, const char **argv)
   char *ptr;
   size_t len;
 
-  if (argc != 2)
+  if (argc != 2) {
+    fprintf(stderr, "getenv_spec argc != 2 return NULL argv[0]: %s\n", argv[0]);
     return NULL;
+  }
 
   varname = argv[0];
   value = env.get (varname);
@@ -10359,6 +10657,7 @@ getenv_spec_function (int argc, const char **argv)
     {
       result = XNEWVAR (char, strlen(varname) + 2);
       sprintf (result, "/%s", varname);
+      fprintf(stderr, "getenv_spec! value && spec_undefvar_allowed return: %s\n", result);
       return result;
     }
 
@@ -10379,7 +10678,7 @@ getenv_spec_function (int argc, const char **argv)
     }
 
   strcpy (ptr, argv[1]);
-
+  fprintf(stderr, "getenv_spec eof ptr: %p varname: \"%s\" argv[1]: \"%s\" ptr: \"%s\" result: \"%s\"\n", (void*)ptr, varname, argv[1], ptr, result);
   return result;
 }
 
