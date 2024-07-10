@@ -54,6 +54,17 @@ compilation is specified by a string called a "spec".  */
 #endif
 
 
+// #define DEBUG 1
+#define DEBUG_SPECS 1
+
+static void dump_args(const char *prefix, int argc, const char **argv) {
+   fprintf(stderr, "dump_args for %s argc: %d\n", prefix, argc);
+   for (int i = 0; i < argc; ++i)
+    {
+      fprintf(stderr, "%s argv[%d] = \"%s\"\n", prefix, i, argv[i]);
+    }
+ }
+
 /* Manage the manipulation of env vars.
 
    We poison "getenv" and "putenv", so that all enviroment-handling is
@@ -2015,10 +2026,13 @@ gccversion_spec_function (int argc, const char **argv ATTRIBUTE_UNUSED)
   return version;
 }
 
-/* A spec function that concatenates its arugment strings.  */
+/* A function that concatenates its argument strings and allocates
+   the result in a new string.  */
 static const char *
-concat_spec_function (int argc, const char **argv)
+concat_helper (int argc, const char **argv)
 {
+  dump_args("concat_helper", argc, argv);
+
   size_t total_len = 0;
   for (int i = 0; i < argc; ++i)
     {
@@ -2033,7 +2047,122 @@ concat_spec_function (int argc, const char **argv)
       p += slen;
     }
   concat[total_len] = '\0';
+  fprintf(stderr, "concat_helper res: \"%s\"\n", concat);
   return concat;
+}
+
+/* A function that concatenates its argument strings with a seperator
+   and returns the result in a newly allocated string.  */
+static const char *
+concat_sep_helper (int argc, const char **argv)
+{
+  dump_args("concat_sep_helper", argc, argv);
+
+  if (argc < 1)
+    fatal_error (input_location, "concat_sep_helper function takes at least one argument (the seperator)");
+
+  if (argc < 2)
+    {
+      fprintf(stderr, "concat_sep_helper(\"%s\") (no concat args) res: \"\"\n", argv[0]);
+      return xstrdup ("");
+    }
+
+  const size_t sep_len = strlen (argv[0]);
+  fprintf(stderr, "concat_sep_helper sep_len: %zu\n", sep_len);
+
+
+  size_t total_len = 0;
+  for (int i = 1; i < argc; ++i)
+    {
+      const size_t arg_len = strlen (argv[i]);
+      if (arg_len > 0)
+          total_len += strlen (argv[i]) + sep_len;
+    }
+  fprintf(stderr, "concat_sep_helper total_len after loop: %zu\n", total_len);
+  total_len -= sep_len;
+  fprintf(stderr, "concat_sep_helper total_len - sep_len after loop: %zu\n", total_len);
+  char *concat = XNEWVEC (char, total_len + 1);
+  char *p = concat;
+  for (int i = 1; i < argc; ++i)
+    {
+      const size_t arg_len = strlen (argv[i]);
+      if (arg_len > 0)
+        {
+          size_t piece_len = arg_len;
+          strncpy (p, argv[i], arg_len);
+          p += arg_len;
+          fprintf(stderr, "concat_sep_helper argv[%d]: i < argc - 1: %d\n", i, i < argc - 1);
+          if (i < argc - 1)
+            {
+              strncpy (p, argv[0], sep_len);
+              piece_len += sep_len;
+              p += sep_len;
+            }
+          fprintf(stderr, "concat_sep_helper argv[%d]: \"%.*s\"\n", i, (int)piece_len, p - piece_len);
+        }
+      else
+        {
+          fprintf(stderr, "concat_sep_helper argv[%d]: empty string\n", i);
+        }
+    }
+  concat[total_len] = '\0';
+  fprintf(stderr, "concat_sep_helper res: \"%s\"\n", concat);
+  return concat;
+}
+
+/* A function that concatenates its argument strings with a seperator
+   and returns the result in a newly allocated string.  */
+static const char *
+concat_space_helper (int argc, const char **argv) {
+  dump_args("concat_space_helper", argc, argv);
+  const char **new_argv = XNEWVEC(const char *, argc + 1);
+  new_argv[0] = " ";
+  for (int i = 0; i < argc; ++i)
+    {
+      new_argv[i + 1] = argv[i];
+    }
+  const char *concat = concat_sep_helper(argc + 1, new_argv);
+  free (const_cast <char **>(new_argv));
+  return concat;
+}
+
+/* A spec function that prints a notice message.  */
+static const char *
+notice_spec_function (int argc, const char **argv) {
+  dump_args("notice_spec", argc, argv);
+  const char *concat = concat_space_helper(argc, argv);
+  inform (input_location, "%s", concat);
+  free (const_cast <char *>(concat));
+  return xstrdup ("");
+}
+
+/* A spec function that concatenates its argument strings and returns
+   its results in a newly allocated string.  */
+static const char *
+concat_spec_function (int argc, const char **argv)
+{
+  dump_args("concat_spec", argc, argv);
+
+  return concat_helper (argc, argv);
+}
+
+/* A spec function that concatenates its argument strings with a seperator
+   and returns the result in a newly allocated string.  */
+static const char *
+concat_sep_spec_function (int argc, const char **argv)
+{
+  dump_args("concat_sep_spec", argc, argv);
+
+  return concat_sep_helper (argc, argv);
+}
+
+/* A spec function that concatenates its argument strings with a space
+   and returns the result in a newly allocated string.  */
+static const char *
+concat_space_spec_function (int argc, const char **argv)
+{
+  dump_args("concat_space_spec", argc, argv);
+  return concat_space_helper(argc, argv);
 }
 
 #ifdef EXTRA_SPEC_FUNCTIONS
@@ -2041,8 +2170,11 @@ concat_spec_function (int argc, const char **argv)
   EXTRA_SPEC_FUNCTIONS \
   { "canonical_path_no_resolve_symlinks", canonical_path_no_resolve_symlinks_spec_function }, \
   { "concat", concat_spec_function }, \
+  { "concat_sep", concat_sep_spec_function }, \
+  { "concat_space", concat_space_spec_function }, \
   { "dirname", dirname_spec_function}, \
-  { "gccversion", gccversion_spec_function },
+  { "gccversion", gccversion_spec_function }, \
+  { "notice", notice_spec_function },
 #else
 #define EXTRA_EXTRA_SPEC_FUNCTIONS
 #endif
@@ -6090,6 +6222,7 @@ int
 do_spec (const char *spec)
 {
   int value;
+  fprintf(stderr, "do_spec() SPEC:\n%s\nEND_SPEC\n", spec);
 
   value = do_spec_2 (spec, NULL);
 
@@ -6117,6 +6250,8 @@ static int
 do_spec_2 (const char *spec, const char *soft_matched_part)
 {
   int result;
+
+  fprintf(stderr, "do_spec_2 SPEC2:\n%s\nEND_SPEC2\nSOFT_MATCHED2:\n%s\nEND_SOFT_MATCHED2\n", spec, soft_matched_part);
 
   clear_args ();
   arg_going = 0;
@@ -6190,6 +6325,9 @@ static void
 do_self_spec (const char *spec)
 {
   int i;
+
+  fprintf(stderr, "do_self_spec SELF_SPEC:\n%s\nEND_SELF_SPEC\n", spec);
+
 
   do_spec_2 (spec, NULL);
   do_spec_1 (" ", 0, NULL);
@@ -6401,6 +6539,9 @@ do_spec_1 (const char *spec, int inswitch, const char *soft_matched_part)
   int c;
   int i;
   int value;
+
+  fprintf(stderr, "do_spec_1 inswitch: %d SPEC1:\n%s\nEND_SPEC1\nSOFT_MATCHED1:\n%s\nEND_SOFT_MATCHED1\n", inswitch, spec, soft_matched_part);
+
 
   /* If it's an empty string argument to a switch, keep it as is.  */
   if (inswitch && !*p)
