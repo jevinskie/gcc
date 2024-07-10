@@ -2031,8 +2031,6 @@ gccversion_spec_function (int argc, const char **argv ATTRIBUTE_UNUSED)
 static const char *
 concat_helper (int argc, const char **argv)
 {
-  dump_args("concat_helper", argc, argv);
-
   size_t total_len = 0;
   for (int i = 0; i < argc; ++i)
     {
@@ -2047,66 +2045,43 @@ concat_helper (int argc, const char **argv)
       p += slen;
     }
   concat[total_len] = '\0';
-  fprintf(stderr, "concat_helper res: \"%s\"\n", concat);
   return concat;
 }
 
 /* A function that concatenates its argument strings with a seperator
    and returns the result in a newly allocated string.  */
 static const char *
-concat_sep_helper (int argc, const char **argv)
+concat_sep_helper (const char *sep, int argc, const char **argv)
 {
-  dump_args("concat_sep_helper", argc, argv);
-
   if (argc < 1)
-    fatal_error (input_location, "concat_sep_helper function takes at least one argument (the seperator)");
+    return xstrdup ("");
 
-  if (argc < 2)
-    {
-      fprintf(stderr, "concat_sep_helper(\"%s\") (no concat args) res: \"\"\n", argv[0]);
-      return xstrdup ("");
-    }
-
-  const size_t sep_len = strlen (argv[0]);
-  fprintf(stderr, "concat_sep_helper sep_len: %zu\n", sep_len);
-
-
+  const size_t sep_len = strlen (sep);
   size_t total_len = 0;
-  for (int i = 1; i < argc; ++i)
+  for (int i = 0; i < argc; ++i)
     {
       const size_t arg_len = strlen (argv[i]);
       if (arg_len > 0)
           total_len += strlen (argv[i]) + sep_len;
     }
-  fprintf(stderr, "concat_sep_helper total_len after loop: %zu\n", total_len);
-  total_len -= sep_len;
-  fprintf(stderr, "concat_sep_helper total_len - sep_len after loop: %zu\n", total_len);
+  total_len -= total_len >= sep_len ? sep_len : 0;
   char *concat = XNEWVEC (char, total_len + 1);
   char *p = concat;
-  for (int i = 1; i < argc; ++i)
+  for (int i = 0; i < argc; ++i)
     {
       const size_t arg_len = strlen (argv[i]);
       if (arg_len > 0)
         {
-          size_t piece_len = arg_len;
           strncpy (p, argv[i], arg_len);
           p += arg_len;
-          fprintf(stderr, "concat_sep_helper argv[%d]: i < argc - 1: %d\n", i, i < argc - 1);
           if (i < argc - 1)
             {
-              strncpy (p, argv[0], sep_len);
-              piece_len += sep_len;
+              strncpy (p, sep, sep_len);
               p += sep_len;
             }
-          fprintf(stderr, "concat_sep_helper argv[%d]: \"%.*s\"\n", i, (int)piece_len, p - piece_len);
-        }
-      else
-        {
-          fprintf(stderr, "concat_sep_helper argv[%d]: empty string\n", i);
         }
     }
   concat[total_len] = '\0';
-  fprintf(stderr, "concat_sep_helper res: \"%s\"\n", concat);
   return concat;
 }
 
@@ -2114,22 +2089,12 @@ concat_sep_helper (int argc, const char **argv)
    and returns the result in a newly allocated string.  */
 static const char *
 concat_space_helper (int argc, const char **argv) {
-  dump_args("concat_space_helper", argc, argv);
-  const char **new_argv = XNEWVEC(const char *, argc + 1);
-  new_argv[0] = " ";
-  for (int i = 0; i < argc; ++i)
-    {
-      new_argv[i + 1] = argv[i];
-    }
-  const char *concat = concat_sep_helper(argc + 1, new_argv);
-  free (const_cast <char **>(new_argv));
-  return concat;
+  return concat_sep_helper(" ", argc, argv);
 }
 
 /* A spec function that prints a notice message.  */
 static const char *
 notice_spec_function (int argc, const char **argv) {
-  dump_args("notice_spec", argc, argv);
   const char *concat = concat_space_helper(argc, argv);
   inform (input_location, "%s", concat);
   free (const_cast <char *>(concat));
@@ -2141,8 +2106,6 @@ notice_spec_function (int argc, const char **argv) {
 static const char *
 concat_spec_function (int argc, const char **argv)
 {
-  dump_args("concat_spec", argc, argv);
-
   return concat_helper (argc, argv);
 }
 
@@ -2151,9 +2114,9 @@ concat_spec_function (int argc, const char **argv)
 static const char *
 concat_sep_spec_function (int argc, const char **argv)
 {
-  dump_args("concat_sep_spec", argc, argv);
-
-  return concat_sep_helper (argc, argv);
+  if (argc < 1)
+    fatal_error (input_location, "concat_sep spec function takes at least one argument (the seperator)");
+  return concat_sep_helper (argv[0], argc - 1, argv + 1);
 }
 
 /* A spec function that concatenates its argument strings with a space
@@ -2161,8 +2124,7 @@ concat_sep_spec_function (int argc, const char **argv)
 static const char *
 concat_space_spec_function (int argc, const char **argv)
 {
-  dump_args("concat_space_spec", argc, argv);
-  return concat_space_helper(argc, argv);
+  return concat_space_helper (argc, argv);
 }
 
 #ifdef EXTRA_SPEC_FUNCTIONS
