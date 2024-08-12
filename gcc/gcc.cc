@@ -2026,6 +2026,22 @@ gccversion_spec_function (int argc, const char **argv ATTRIBUTE_UNUSED)
   return version;
 }
 
+/* A spec function that returns the GCC target.  */
+static const char *
+gcctarget_spec_function (int argc, const char **argv ATTRIBUTE_UNUSED)
+{
+  if (argc != 0)
+    fatal_error (input_location, "gcctarget spec function takes no arguments");
+
+  char *version = xstrdup (version_string);
+  if (char *space = strchr(version, ' '))
+    {
+      *space = '\0';
+    }
+
+  return version;
+}
+
 /* A function that concatenates its argument strings and allocates
    the result in a new string.  */
 static const char *
@@ -2098,7 +2114,7 @@ notice_spec_function (int argc, const char **argv) {
   const char *concat = concat_space_helper(argc, argv);
   inform (input_location, "%s", concat);
   free (const_cast <char *>(concat));
-  return xstrdup ("");
+  return xstrdup("");
 }
 
 /* A spec function that concatenates its argument strings and returns
